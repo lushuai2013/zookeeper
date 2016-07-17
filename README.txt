@@ -39,3 +39,4 @@ is voted on and approved by the Apache ZooKeeper PMC:
   
   ====
   2016-07-18
+  yes
