@@ -94,7 +94,7 @@ import org.slf4j.MDC;
  * This class manages the socket i/o for the client. ClientCnxn maintains a list
  * of available servers to connect to and "transparently" switches servers it is
  * connected to as needed.
- *
+ * 这个类管理客户端的socket I/O。ClientCnxn维护一个可用服务器列表可以根据需要透明地切换服务器
  */
 public class ClientCnxn {
     private static final Logger LOG = LoggerFactory.getLogger(ClientCnxn.class);
@@ -124,14 +124,18 @@ public class ClientCnxn {
 
     /**
      * These are the packets that have been sent and are waiting for a response.
+     * 哪些已经发送出去的目前正在等待响应的包
      */
     private final LinkedList<Packet> pendingQueue = new LinkedList<Packet>();
 
     /**
      * These are the packets that need to be sent.
+     *  那些需要发送的包
      */
     private final LinkedBlockingDeque<Packet> outgoingQueue = new LinkedBlockingDeque<Packet>();
-
+    /**
+     * 超时时间
+     */
     private int connectTimeout;
 
     /**
@@ -139,19 +143,20 @@ public class ClientCnxn {
      * "real" timeout, not the timeout request by the client (which may have
      * been increased/decreased by the server which applies bounds to this
      * value.
+     * 客户端与服务器协商的超时时间，以毫秒为单位。这是真正的超时时间，而不是客户端的超时请求
      */
     private volatile int negotiatedSessionTimeout;
-
+    //读取超时时间
     private int readTimeout;
-
+    //会话超时时间
     private final int sessionTimeout;
 
     private final ZooKeeper zooKeeper;
 
     private final ClientWatchManager watcher;
-
+    //会话ID
     private long sessionId;
-
+    //会话密钥
     private byte sessionPasswd[] = new byte[16];
 
     /**
@@ -159,13 +164,14 @@ public class ClientCnxn {
      * is sent, besides other data, during session creation handshake. If the
      * server on the other side of the wire is partitioned it'll accept
      * read-only clients only.
+     * 是否只读
      */
     private boolean readOnly;
 
     final String chrootPath;
-
+    // 发送线程
     final SendThread sendThread;
-
+    // 事件回调线程
     final EventThread eventThread;
 
     /**
@@ -178,6 +184,7 @@ public class ClientCnxn {
     
     /**
      * A set of ZooKeeper hosts this client could connect to.
+     * 一组客户端可以连接的Zk主机
      */
     private final HostProvider hostProvider;
 
@@ -193,6 +200,13 @@ public class ClientCnxn {
      * <p>
      * If this field is false (which implies we haven't seen r/w server before)
      * then non-zero sessionId is fake, otherwise it is valid.
+     *
+     * 第一次和读写服务器建立连接时设置为true，之后不再改变。
+     这个值用来处理客户端没有sessionId连接只读模式服务器的场景.
+     客户端从只读服务器收到一个假的sessionId,这个sessionId对于其他服务器是无效的。所以
+     当客户端寻找一个读写服务器时，它在连接握手时发送0代替假的sessionId，建立一个新的，有效的会话
+     如果这个属性是false(这就意味着之前没有找到过读写服务器)则表示非0的sessionId是假的否则就是有效的
+     *
      */
     volatile boolean seenRwServerBefore = false;
 
@@ -331,7 +345,7 @@ public class ClientCnxn {
      * Creates a connection object. The actual network connect doesn't get
      * established until needed. The start() instance method must be called
      * subsequent to construction.
-     *
+     * 创建一个连接对象。真正的网路连接直到需要的时候才建立。start()方法在执行构造方法后一定要调用 这个构造方法在ZooKeeper的初始化时调用，用于初始化一个客户端网路管理器
      * @param chrootPath - the chroot of this client. Should be removed from this Class in ZOOKEEPER-838
      * @param hostProvider
      *                the list of ZooKeeper servers to connect to
@@ -358,7 +372,7 @@ public class ClientCnxn {
      * Creates a connection object. The actual network connect doesn't get
      * established until needed. The start() instance method must be called
      * subsequent to construction.
-     *
+     * 创建一个连接对象。真正的网路连接直到需要的时候才建立。start()方法在执行构造方法后一定要调用 这个构造方法在ZooKeeper的初始化时调用，用于初始化一个客户端网路管理器
      * @param chrootPath - the chroot of this client. Should be removed from this Class in ZOOKEEPER-838
      * @param hostProvider
      *                the list of ZooKeeper servers to connect to
@@ -379,23 +393,28 @@ public class ClientCnxn {
     public ClientCnxn(String chrootPath, HostProvider hostProvider, int sessionTimeout, ZooKeeper zooKeeper,
             ClientWatchManager watcher, ClientCnxnSocket clientCnxnSocket,
             long sessionId, byte[] sessionPasswd, boolean canBeReadOnly) {
+        //客户端实例
         this.zooKeeper = zooKeeper;
+        // 客户端Watcher管理器
         this.watcher = watcher;
         this.sessionId = sessionId;
         this.sessionPasswd = sessionPasswd;
         this.sessionTimeout = sessionTimeout;
+        //服务器地址列表管理器
         this.hostProvider = hostProvider;
+        //根路径
         this.chrootPath = chrootPath;
-
+        // 连接超时时间是会话超时时间和服务器数量的比值
         connectTimeout = sessionTimeout / hostProvider.size();
+        // 读超时时间是会话超时时间的2/3
         readTimeout = sessionTimeout * 2 / 3;
         readOnly = canBeReadOnly;
-
+        //创建发送和事件处理线程
         sendThread = new SendThread(clientCnxnSocket);
         eventThread = new EventThread();
         this.clientConfig=zooKeeper.getClientConfig();
     }
-
+    //启动发送和事件处理线程
     public void start() {
         sendThread.start();
         eventThread.start();
@@ -423,14 +442,17 @@ public class ClientCnxn {
             replaceAll("-EventThread", "");
         return name + suffix;
     }
-
+    // 事件处理线程
     class EventThread extends ZooKeeperThread {
+        //等待处理的事件
         private final LinkedBlockingQueue<Object> waitingEvents =
             new LinkedBlockingQueue<Object>();
 
         /** This is really the queued session state until the event
          * thread actually processes the event and hands it to the watcher.
          * But for all intents and purposes this is the state.
+         *
+         * 这个是真正的排队会话的状态，知道事件处理线程真正处理事件并将其返回给监视器
          */
         private volatile KeeperState sessionState = KeeperState.Disconnected;
 
@@ -448,10 +470,12 @@ public class ClientCnxn {
 
         private void queueEvent(WatchedEvent event,
                 Set<Watcher> materializedWatchers) {
+            // 如果WatchedEvent的类型是None状态是sessionStat的值则不处理
             if (event.getType() == EventType.None
                     && sessionState == event.getState()) {
                 return;
             }
+            // 获取事件的状态
             sessionState = event.getState();
             final Set<Watcher> watchers;
             if (materializedWatchers == null) {
@@ -462,8 +486,10 @@ public class ClientCnxn {
                 watchers = new HashSet<Watcher>();
                 watchers.addAll(materializedWatchers);
             }
+            // 构建一个基于事件的监视器
             WatcherSetEventPair pair = new WatcherSetEventPair(watchers, event);
             // queue the pair (watch set & event) for later processing
+            // 排队pair，稍后处理
             waitingEvents.add(pair);
         }
 
@@ -471,7 +497,7 @@ public class ClientCnxn {
                 Object ctx) {
             waitingEvents.add(new LocalCallback(cb, rc, path, ctx));
         }
-
+        //排队Packet
        public void queuePacket(Packet packet) {
           if (wasKilled) {
              synchronized (waitingEvents) {
@@ -492,6 +518,7 @@ public class ClientCnxn {
            try {
               isRunning = true;
               while (true) {
+                  //从等待处理的事件队列中获取事件
                  Object event = waitingEvents.take();
                  if (event == eventOfDeath) {
                     wasKilled = true;
@@ -513,11 +540,12 @@ public class ClientCnxn {
             LOG.info("EventThread shut down for session: 0x{}",
                      Long.toHexString(getSessionId()));
         }
-
-       private void processEvent(Object event) {
+        // 真正处理事件的入口，主要是回调处理
+        private void processEvent(Object event) {
           try {
+              // 如果事件是WatcherSetEventPair
               if (event instanceof WatcherSetEventPair) {
-                  // each watcher will process the event
+                  // each watcher will process the event 每个监视器都会处理这个事件
                   WatcherSetEventPair pair = (WatcherSetEventPair) event;
                   for (Watcher watcher : pair.watchers) {
                       try {
@@ -528,6 +556,7 @@ public class ClientCnxn {
                   }
                 } else if (event instanceof LocalCallback) {
                     LocalCallback lcb = (LocalCallback) event;
+                    // 如果处理成功回调方法会传入响应状态，否则响应状态为null
                     if (lcb.cb instanceof StatCallback) {
                         ((StatCallback) lcb.cb).processResult(lcb.rc, lcb.path,
                                 lcb.ctx, null);
@@ -553,6 +582,7 @@ public class ClientCnxn {
                 } else {
                   Packet p = (Packet) event;
                   int rc = 0;
+                  //获取客户端路径
                   String clientPath = p.clientPath;
                   if (p.replyHeader.getErr() != 0) {
                       rc = p.replyHeader.getErr();
@@ -581,6 +611,7 @@ public class ClientCnxn {
                           cb.processResult(rc, clientPath, p.ctx, null);
                       }
                   } else if (p.response instanceof GetDataResponse) {
+                      // 获取回调对象
                       DataCallback cb = (DataCallback) p.cb;
                       GetDataResponse rsp = (GetDataResponse) p.response;
                       if (rc == 0) {

@@ -128,6 +128,20 @@ import org.slf4j.LoggerFactory;
  * the event handler a connection has been dropped. This special event has type
  * EventNone and state sKeeperStateDisconnected.
  *
+ 这是ZooKeeper客户端库的主类。使用ZK服务，应用必须收银实例化ZooKeeper类。
+ 所有迭代都是通过调用ZooKeeper类的方法完成。
+ 这个类的方法是除了特殊说明以外都是线程安全的。
+ 一旦和服务器建立连接，客户端就分配到一个会话ID(session ID).客户端将周期性发送心跳信号到服务器来保持会话有效。
+ 只要客户端的会话ID有效，应用都可以通过客户端调用ZooKeeper的接口
+ 如果因为一些原因导致客户端长时间向服务器发送心跳信号失败（例如，超过会话的超时时间），服务器将会话过期，同时会话ID也失效。客户端对象将不再可用。为了调用ZooKeeper 接口，应用必须创建一个新的客户端。
+ 如果ZooKeeper服务器的客户端的当前连接失败或其他原因没有响应，客户端在会话ID过期前会自动连接其他服务器。如果成功连接其他服务器，应用可以继续使用客户端。
+ ZooKeeper的接口方法是同步或异步的。同步方法一直挂起到服务器响应。异步方法只是将发送的请求排队并立即返回。它使用一个回调对象，无论请求执行成功与否都会执行回调方法返回一个结果码指示结果状态。
+ 一些ZooKeeper API 成功被调用可以在ZK服务器的数据节点上注监视器。其他ZooKeeper API 成功调用可以触发监哪些监视器。一旦一个监视器被触发，时间将被传递到第一步注册监视器的客户端。每个监视器只能够被触发一次
+ 因此，一旦一个时间被传递到客户端的监视器，它将被注销。
+ 客户端需要一个实现Watcher接口的对象去处理传递到客户端的事件。
+ 当客户端丢失当前连接后重新连接服务器，所有被认为是触发的监视器，但是没有送达的事件将丢失。
+ 为了模式这个场景，客户端将产生一个特殊的事件，去告诉事件处理器连接被删除。这个特殊的事件的类型是EventNone 状态是KeeperStateDiscounnected
+ *
  */
 public class ZooKeeper {
 
@@ -220,19 +234,21 @@ public class ZooKeeper {
     public ZKClientConfig getClientConfig() {
         return clientConfig;
     }
-
+    // 获取数据监视器列表
     List<String> getDataWatches() {
         synchronized(watchManager.dataWatches) {
             List<String> rc = new ArrayList<String>(watchManager.dataWatches.keySet());
             return rc;
         }
     }
+    // 获取Exist监视器列表
     List<String> getExistWatches() {
         synchronized(watchManager.existWatches) {
             List<String> rc =  new ArrayList<String>(watchManager.existWatches.keySet());
             return rc;
         }
     }
+    // 获取子节点监视器列表
     List<String> getChildWatches() {
         synchronized(watchManager.childWatches) {
             List<String> rc = new ArrayList<String>(watchManager.childWatches.keySet());
@@ -246,12 +262,17 @@ public class ZooKeeper {
      * We are implementing this as a nested class of ZooKeeper so that
      * the public methods will not be exposed as part of the ZooKeeper client
      * API.
+     *
+     *  管理监视器 & 处理由ClientCnxn对象生成的事件。这个实现作为ZooKeeper的一个嵌套类，这样可以避免公开方法被作为ZooKeeper 客户端API的一部分被公开。
      */
     static class ZKWatchManager implements ClientWatchManager {
+        // 数据节点监视器
         private final Map<String, Set<Watcher>> dataWatches =
             new HashMap<String, Set<Watcher>>();
+        // exist 监视器
         private final Map<String, Set<Watcher>> existWatches =
             new HashMap<String, Set<Watcher>>();
+        // 子节点监视器
         private final Map<String, Set<Watcher>> childWatches =
             new HashMap<String, Set<Watcher>>();
         private boolean disableAutoWatchReset;
@@ -259,9 +280,9 @@ public class ZooKeeper {
         ZKWatchManager(boolean disableAutoWatchReset) {
             this.disableAutoWatchReset = disableAutoWatchReset;
         }
-
+        // 默认监视器
         private volatile Watcher defaultWatcher;
-
+        // 添加监视器
         final private void addTo(Set<Watcher> from, Set<Watcher> to) {
             if (from != null) {
                 to.addAll(from);
@@ -440,8 +461,10 @@ public class ZooKeeper {
             return success;
         }
         
-        /* (non-Javadoc)
-         * @see org.apache.zookeeper.ClientWatchManager#materialize(Event.KeeperState, 
+        /*
+          返回事件需要通知的监视器列表，管理器不能通知监视器，如果监视器已经被触发，管理器将更新它内部的结构。
+           这样做的目的是被调用者目前也可能在以后的某个时间是负责通知的事件的监视。
+         * @see org.apache.zookeeper.ClientWatchManager#materialize(Event.KeeperState,
          *                                                        Event.EventType, java.lang.String)
          */
         @Override
@@ -449,16 +472,20 @@ public class ZooKeeper {
                                         Watcher.Event.EventType type,
                                         String clientPath)
         {
+            // 需要通知的监视器
             Set<Watcher> result = new HashSet<Watcher>();
-
+            // 事件类型
             switch (type) {
+            // 事件类型为None通知所有监视器
             case None:
                 result.add(defaultWatcher);
                 boolean clear = disableAutoWatchReset && state != Watcher.Event.KeeperState.SyncConnected;
                 synchronized(dataWatches) {
+                    // 添加所有数据监视器
                     for(Set<Watcher> ws: dataWatches.values()) {
                         result.addAll(ws);
                     }
+                    // 如果需要清空则清空数据监视器
                     if (clear) {
                         dataWatches.clear();
                     }
@@ -485,7 +512,9 @@ public class ZooKeeper {
                 return result;
             case NodeDataChanged:
             case NodeCreated:
+                // 数据节点被创建
                 synchronized (dataWatches) {
+                    // 通知数据节点监视器和exist监视器，同时将其删除
                     addTo(dataWatches.remove(clientPath), result);
                 }
                 synchronized (existWatches) {
@@ -493,11 +522,13 @@ public class ZooKeeper {
                 }
                 break;
             case NodeChildrenChanged:
+                //子节点列表变化事件，通知子节点变化监视器，同时删除
                 synchronized (childWatches) {
                     addTo(childWatches.remove(clientPath), result);
                 }
                 break;
             case NodeDeleted:
+                 // 节点删除事件
                 synchronized (dataWatches) {
                     addTo(dataWatches.remove(clientPath), result);
                 }
@@ -526,22 +557,26 @@ public class ZooKeeper {
 
     /**
      * Register a watcher for a particular path.
+     * 为一个特殊的路径注册监视器.
      */
     abstract class WatchRegistration {
+        // 监视器
         private Watcher watcher;
+        // 客户端路径
         private String clientPath;
         public WatchRegistration(Watcher watcher, String clientPath)
         {
             this.watcher = watcher;
             this.clientPath = clientPath;
         }
-
+        // 获取路径监视器的映射关系
         abstract protected Map<String, Set<Watcher>> getWatches(int rc);
 
         /**
          * Register the watcher with the set of watches on path.
          * @param rc the result code of the operation that attempted to
          * add the watch on the path.
+         *  在一个路径上注册监视器
          */
         public void register(int rc) {
             if (shouldAddWatch(rc)) {
@@ -561,6 +596,7 @@ public class ZooKeeper {
          * @param rc the result code of the operation that attempted to add the
          * watch on the node
          * @return true if the watch should be added, otw false
+         * 基于结果码判断是否需要添加监视器
          */
         protected boolean shouldAddWatch(int rc) {
             return rc == 0;
@@ -611,7 +647,7 @@ public class ZooKeeper {
     public enum States {
         CONNECTING, ASSOCIATING, CONNECTED, CONNECTEDREADONLY,
         CLOSED, AUTH_FAILED, NOT_CONNECTED;
-
+        //判断连接是否存活，只要不是CLOSED也不是AUTH_FAILED都是存活的
         public boolean isAlive() {
             return this != CLOSED && this != AUTH_FAILED;
         }
@@ -620,6 +656,7 @@ public class ZooKeeper {
          * Returns whether we are connected to a server (which
          * could possibly be read-only, if this client is allowed
          * to go to read-only mode)
+         * 判断是否和服务器见有连接，如果状态是CONNECTED或者是CONNECTEDREADONLY都表示有连接
          * */
         public boolean isConnected() {
             return this == CONNECTED || this == CONNECTEDREADONLY;
@@ -859,15 +896,18 @@ public class ZooKeeper {
             clientConfig = new ZKClientConfig();
         }
         this.clientConfig = clientConfig;
+        // 1 设置默认监视器
         watchManager = defaultWatchManager();
         watchManager.defaultWatcher = watcher;
+        //创建一个连接字符串的解析器
         ConnectStringParser connectStringParser = new ConnectStringParser(
                 connectString);
         hostProvider = aHostProvider;
-
+        //2.构建一个客户端连接对象
         cnxn = new ClientCnxn(connectStringParser.getChrootPath(),
                 hostProvider, sessionTimeout, this, watchManager,
                 getClientCnxnSocket(), canBeReadOnly);
+        //3. 启动连接
         cnxn.start();
     }
 
@@ -1205,7 +1245,10 @@ public class ZooKeeper {
                 canBeReadOnly, createDefaultHostProvider(connectString));
     }
 
-    // default hostprovider
+    /**
+     *  default hostprovider
+     * 构建一个HostProvider
+     */
     private static HostProvider createDefaultHostProvider(String connectString) {
         return new StaticHostProvider(
                 new ConnectStringParser(connectString).getServerAddresses());
